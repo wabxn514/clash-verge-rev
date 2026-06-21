@@ -15,14 +15,15 @@ import {
   ClearRounded,
   ContentPasteRounded,
   DeleteRounded,
+  FolderOpenRounded,
   IndeterminateCheckBoxRounded,
   LocalFireDepartmentRounded,
   RefreshRounded,
   TextSnippetOutlined,
 } from '@mui/icons-material'
-import { Box, Button, Divider, Grid, IconButton, Stack } from '@mui/material'
+import { Box, Button, Divider, Grid, IconButton, List, ListItemButton, ListItemText, Stack, Tab, Tabs, Typography } from '@mui/material'
 import { useQuery } from '@tanstack/react-query'
-import { TauriEvent } from '@tauri-apps/api/event'
+import { listen, TauriEvent } from '@tauri-apps/api/event'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { readTextFile } from '@tauri-apps/plugin-fs'
 import { useLockFn } from 'ahooks'
@@ -37,12 +38,10 @@ import {
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation } from 'react-router'
-import {
-  closeAllConnections,
-  selectNodeForGroup,
-} from 'tauri-plugin-mihomo-api'
+import { closeAllConnections } from 'tauri-plugin-mihomo-api'
 
 import { BasePage, BaseStyledTextField, DialogRef } from '@/components/base'
+import { GroupsManagerDialog } from '@/components/profile/groups-manager-dialog'
 import { ProfileItem } from '@/components/profile/profile-item'
 import { ProfileMore } from '@/components/profile/profile-more'
 import {
@@ -52,8 +51,8 @@ import {
 import { ConfigViewer } from '@/components/setting/mods/config-viewer'
 import { useListen } from '@/hooks/use-listen'
 import { useProfiles } from '@/hooks/use-profiles'
+import { useSubscriptionGroups } from '@/hooks/use-subscription-groups'
 import {
-  calcuProxies,
   createProfile,
   deleteProfile,
   enhanceProfiles,
@@ -63,18 +62,12 @@ import {
   importProfile,
   reorderProfile,
   updateProfile,
+  openDevTools,
 } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import { queryClient } from '@/services/query-client'
-import {
-  useLoadingCache,
-  useSetLoadingCache,
-  useThemeMode,
-} from '@/services/states'
+import { useSetLoadingCache, useThemeMode } from '@/services/states'
 import { debugLog } from '@/utils/debug'
-
-// 与 src-tauri/src/main.rs 的 worker_limit 上限(8)保持一致，避免前后端更新风暴不对齐
-const PROFILE_UPDATE_WORKER_LIMIT = 8
 
 // 记录profile切换状态
 const debugProfileSwitch = (action: string, profile: string, extra?: any) => {
@@ -119,6 +112,26 @@ const ProfilePage = () => {
   const [disabled, setDisabled] = useState(false)
   const [activatings, setActivatings] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
+
+  const { groups, setProfileGroup } = useSubscriptionGroups()
+  const [activeTab, setActiveTab] = useState('all')
+  const groupsManagerRef = useRef<DialogRef>(null)
+  const [displayLimit, setDisplayLimit] = useState(32)
+
+  // Reset tab if active group is deleted
+  useEffect(() => {
+    if (activeTab !== 'all' && activeTab !== 'uncategorized') {
+      const exists = groups.some((g) => g.id === activeTab)
+      if (!exists) {
+        setActiveTab('all')
+      }
+    }
+  }, [groups, activeTab])
+
+  // Reset display limit when switching tabs
+  useEffect(() => {
+    setDisplayLimit(32)
+  }, [activeTab])
 
   // Batch selection states
   const [batchMode, setBatchMode] = useState(false)
@@ -189,6 +202,7 @@ const ProfilePage = () => {
 
   const {
     profiles = {},
+    activateSelected,
     patchProfiles,
     mutateProfiles,
     error,
@@ -281,8 +295,34 @@ const ProfilePage = () => {
 
     const type1 = ['local', 'remote']
 
-    return items.filter((i) => i && type1.includes(i.type!))
+    return items.filter((i) => i && type1.includes(i.type!) && i.name != null && i.name !== '')
   }, [profiles])
+
+  const filteredProfileItems = useMemo(() => {
+    if (activeTab === 'all') {
+      return profileItems
+    }
+    if (activeTab === 'uncategorized') {
+      const groupedUids = new Set(groups.flatMap((g) => g.uids))
+      return profileItems.filter((item) => !groupedUids.has(item.uid))
+    }
+    const targetGroup = groups.find((g) => g.id === activeTab)
+    if (!targetGroup) return []
+    const groupUids = new Set(targetGroup.uids)
+    return profileItems.filter((item) => groupUids.has(item.uid))
+  }, [profileItems, activeTab, groups])
+
+  const activeGroupName = useMemo(() => {
+    if (activeTab !== 'all' && activeTab !== 'uncategorized') {
+      return groups.find((g) => g.id === activeTab)?.name || ''
+    }
+    return ''
+  }, [groups, activeTab])
+
+  const uncategorizedCount = useMemo(() => {
+    const groupedUids = new Set(groups.flatMap((g) => g.uids))
+    return profileItems.filter((item) => !groupedUids.has(item.uid)).length
+  }, [profileItems, groups])
 
   const currentActivatings = () => {
     return [...new Set([profiles.current ?? ''])].filter(Boolean)
@@ -302,17 +342,13 @@ const ProfilePage = () => {
       setUrl('')
       await performRobustRefresh()
     }
+
     try {
       // 尝试正常导入
       await importProfile(url)
       await handleImportSuccess('shared.feedback.notifications.importSuccess')
     } catch (initialErr) {
       console.warn('[订阅导入] 首次导入失败:', initialErr)
-
-      if (String(initialErr).toLowerCase().includes('legacy tls')) {
-        showNotice.error(String(initialErr))
-        return
-      }
 
       showNotice.info('profiles.page.feedback.notifications.importRetry')
       try {
@@ -399,6 +435,34 @@ const ProfilePage = () => {
     }
   }
 
+  const executeBackgroundTasks = useCallback(
+    async (
+      profile: string,
+      sequence: number,
+      abortController: AbortController,
+    ) => {
+      try {
+        if (
+          sequence === requestSequenceRef.current &&
+          switchingProfileRef.current === profile &&
+          !abortController.signal.aborted
+        ) {
+          await activateSelected(profiles)
+          debugLog(`[Profile] 后台处理完成，序列号: ${sequence}`)
+        } else {
+          debugProfileSwitch(
+            'BACKGROUND_TASK_SKIPPED',
+            profile,
+            `序列号过期或被中断: ${sequence} vs ${requestSequenceRef.current}`,
+          )
+        }
+      } catch (err: any) {
+        console.warn('Failed to activate selected proxies:', err)
+      }
+    },
+    [activateSelected, profiles],
+  )
+
   const activateProfile = useCallback(
     async (profile: string, notifySuccess: boolean) => {
       if (profiles.current === profile && !notifySuccess) {
@@ -468,22 +532,6 @@ const ProfilePage = () => {
           return
         }
 
-        // 选择所记忆的节点
-        const current = profiles.items?.find((e) => e.uid === profile)
-        for (const item of current?.selected ?? []) {
-          if (item.name && item.now) {
-            try {
-              await selectNodeForGroup(item.name, item.now)
-            } catch (err) {
-              debugLog(
-                `[Profile] 选择节点失败: ${item.name} -> ${item.now}`,
-                err,
-              )
-            }
-          }
-        }
-        queryClient.setQueryData(['getProxies'], await calcuProxies())
-
         // 完成切换
         await mutateLogs()
         closeAllConnections()
@@ -497,6 +545,17 @@ const ProfilePage = () => {
 
         debugLog(
           `[Profile] 切换到 ${profile} 完成，序列号: ${currentSequence}，开始后台处理`,
+        )
+
+        // 延迟执行后台任务
+        setTimeout(
+          () =>
+            executeBackgroundTasks(
+              profile,
+              currentSequence,
+              currentAbortController,
+            ),
+          50,
         )
       } catch (err: any) {
         if (pendingRequestRef.current) {
@@ -533,6 +592,7 @@ const ProfilePage = () => {
       profiles,
       patchProfiles,
       mutateLogs,
+      executeBackgroundTasks,
       handleProfileInterrupt,
       cleanupSwitchState,
     ],
@@ -595,6 +655,9 @@ const ProfilePage = () => {
     const current = profiles.current === uid
     try {
       setActivatings([...(current ? currentActivatings() : []), uid])
+      // 1. 先从自定义分组文件中解除绑定关系
+      await setProfileGroup(uid, null)
+      // 2. 再调用系统原有的删除命令（执行系统自有的 profiles.yaml 标记/清理逻辑）
       await deleteProfile(uid)
       mutateProfiles()
       mutateLogs()
@@ -609,68 +672,82 @@ const ProfilePage = () => {
   })
 
   // 更新所有订阅
-  const loadingCache = useLoadingCache()
   const setLoadingCache = useSetLoadingCache()
-  const setLoadingProfiles = useCallback(
-    (uids: string[], loading: boolean) => {
-      setLoadingCache((cache) => {
-        const next = new Set(cache)
-        for (const uid of uids) {
-          if (loading) {
-            next.add(uid)
-          } else {
-            next.delete(uid)
-          }
-        }
-        return next
-      })
-    },
-    [setLoadingCache],
-  )
-  const runProfileUpdates = useCallback(
-    async (uids: string[]) => {
-      if (uids.length === 0) return
-
-      const throttleMutate = throttle(mutateProfiles, 2000, {
-        trailing: true,
-      })
-      let cursor = 0
-
-      const updateOne = async (uid: string) => {
-        try {
-          await updateProfile(uid)
-          throttleMutate()
-        } catch (err: any) {
-          console.error(`更新订阅 ${uid} 失败:`, err)
-        }
-      }
-
-      const worker = async () => {
-        while (cursor < uids.length) {
-          const uid = uids[cursor++]
-          await updateOne(uid)
-        }
-      }
-
-      try {
-        const active = Math.min(PROFILE_UPDATE_WORKER_LIMIT, uids.length)
-        await Promise.allSettled(Array.from({ length: active }, worker))
-      } finally {
-        setLoadingProfiles(uids, false)
-        // 避免长时间批量更新后列表数据过晚刷新
-        void mutateProfiles()
-      }
-    },
-    [mutateProfiles, setLoadingProfiles],
-  )
   const onUpdateAll = useLockFn(async () => {
-    const items = profileItems.filter((e) => e.type === 'remote')
-    const target = items
-      .map((item) => item.uid)
-      .filter((uid) => !loadingCache.has(uid))
+    const throttleMutate = throttle(mutateProfiles, 2000, {
+      trailing: true,
+    })
+    const updateOne = async (uid: string) => {
+      try {
+        await updateProfile(uid)
+        throttleMutate()
+      } catch (err: any) {
+        console.error(`更新订阅 ${uid} 失败:`, err)
+      } finally {
+        setLoadingCache((cache) => ({ ...cache, [uid]: false }))
+      }
+    }
 
-    setLoadingProfiles(target, true)
-    await runProfileUpdates(target)
+    return new Promise((resolve) => {
+      setLoadingCache((cache) => {
+        // 获取没有正在更新的订阅
+        const items = profileItems.filter(
+          (e) => e.type === 'remote' && !cache[e.uid],
+        )
+        const change = Object.fromEntries(items.map((e) => [e.uid, true]))
+
+        Promise.allSettled(items.map((e) => updateOne(e.uid))).then(resolve)
+        return { ...cache, ...change }
+      })
+    })
+  })
+
+  // 更新当前活跃标签下的订阅
+  const onUpdateActiveGroup = useLockFn(async () => {
+    if (activeTab === 'all') {
+      return onUpdateAll()
+    }
+
+    const targetUids =
+      activeTab === 'uncategorized'
+        ? filteredProfileItems
+            .filter((item) => item.type === 'remote')
+            .map((item) => item.uid)
+        : groups.find((g) => g.id === activeTab)?.uids || []
+
+    if (targetUids.length === 0) return
+
+    const throttleMutate = throttle(mutateProfiles, 2000, {
+      trailing: true,
+    })
+
+    const updateOne = async (uid: string) => {
+      try {
+        await updateProfile(uid)
+        throttleMutate()
+      } catch (err: any) {
+        console.error(`更新订阅 ${uid} 失败:`, err)
+      } finally {
+        setLoadingCache((cache) => ({ ...cache, [uid]: false }))
+      }
+    }
+
+    return new Promise((resolve) => {
+      setLoadingCache((cache) => {
+        const itemsToUpdate = targetUids.filter((uid) => {
+          const item = profileItems.find((p) => p.uid === uid)
+          return item && item.type === 'remote' && !cache[uid]
+        })
+        const change = Object.fromEntries(
+          itemsToUpdate.map((uid) => [uid, true]),
+        )
+
+        Promise.allSettled(itemsToUpdate.map((uid) => updateOne(uid))).then(
+          resolve,
+        )
+        return { ...cache, ...change }
+      })
+    })
   })
 
   const onCopyLink = async () => {
@@ -737,6 +814,9 @@ const ProfilePage = () => {
 
       // Delete all selected profiles
       for (const uid of selectedProfiles) {
+        // 1. 先解绑分组
+        await setProfileGroup(uid, null)
+        // 2. 再调用系统原有的删除命令
         await deleteProfile(uid)
       }
 
@@ -765,6 +845,59 @@ const ProfilePage = () => {
   const dividercolor = isLight
     ? 'rgba(0, 0, 0, 0.06)'
     : 'rgba(255, 255, 255, 0.06)'
+
+  // 监听后端配置变更
+  useEffect(() => {
+    let unlistenPromise: Promise<() => void> | undefined
+    let lastProfileId: string | null = null
+    let lastUpdateTime = 0
+    const debounceDelay = 200
+
+    let refreshTimer: number | null = null
+
+    const setupListener = async () => {
+      unlistenPromise = listen<string>('profile-changed', (event) => {
+        const newProfileId = event.payload
+        const now = Date.now()
+
+        debugLog(`[Profile] 收到配置变更事件: ${newProfileId}`)
+
+        if (
+          lastProfileId === newProfileId &&
+          now - lastUpdateTime < debounceDelay
+        ) {
+          debugLog(`[Profile] 重复事件被防抖，跳过`)
+          return
+        }
+
+        lastProfileId = newProfileId
+        lastUpdateTime = now
+
+        debugLog(`[Profile] 执行配置数据刷新`)
+
+        if (refreshTimer !== null) {
+          window.clearTimeout(refreshTimer)
+        }
+
+        // 使用异步调度避免阻塞事件处理
+        refreshTimer = window.setTimeout(() => {
+          mutateProfiles().catch((error) => {
+            console.error('[Profile] 配置数据刷新失败:', error)
+          })
+          refreshTimer = null
+        }, 0)
+      })
+    }
+
+    setupListener()
+
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer)
+      }
+      unlistenPromise?.then((unlisten) => unlisten()).catch(console.error)
+    }
+  }, [mutateProfiles])
 
   // 组件卸载时清理中断控制器
   useEffect(() => {
@@ -795,11 +928,32 @@ const ProfilePage = () => {
                 <CheckBoxOutlineBlankRounded />
               </IconButton>
 
+              <Button
+                size="small"
+                variant="outlined"
+                color="warning"
+                onClick={async () => {
+                  try {
+                    await openDevTools()
+                  } catch (e) {
+                    console.error(e)
+                  }
+                }}
+              >
+                调试控制台
+              </Button>
+
               <IconButton
                 size="small"
                 color="inherit"
-                title={t('profiles.page.actions.updateAll')}
-                onClick={onUpdateAll}
+                title={
+                  activeTab === 'all'
+                    ? t('profiles.page.actions.updateAll')
+                    : activeTab === 'uncategorized'
+                      ? '更新未分类订阅'
+                      : `更新分组【${activeGroupName}】`
+                }
+                onClick={onUpdateActiveGroup}
               >
                 <RefreshRounded />
               </IconButton>
@@ -888,176 +1042,284 @@ const ProfilePage = () => {
         </Box>
       }
     >
-      <Stack
-        direction="row"
-        spacing={1}
-        sx={{
-          pt: 1,
-          mb: 0.5,
-          mx: '10px',
-          height: '36px',
-          display: 'flex',
-          alignItems: 'center',
-        }}
-      >
-        <BaseStyledTextField
-          value={url}
-          variant="outlined"
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
-              return
-            }
-            if (!url || disabled || loading) {
-              return
-            }
-            event.preventDefault()
-            void onImport()
-          }}
-          placeholder={t('profiles.page.importForm.placeholder')}
-          slotProps={{
-            input: {
-              sx: { pr: 1 },
-              endAdornment: !url ? (
-                <IconButton
-                  size="small"
-                  sx={{ p: 0.5 }}
-                  title={t('profiles.page.importForm.actions.paste')}
-                  onClick={onCopyLink}
-                >
-                  <ContentPasteRounded fontSize="inherit" />
-                </IconButton>
-              ) : (
-                <IconButton
-                  size="small"
-                  sx={{ p: 0.5 }}
-                  title={t('shared.actions.clear')}
-                  onClick={() => setUrl('')}
-                >
-                  <ClearRounded fontSize="inherit" />
-                </IconButton>
-              ),
-            },
-          }}
-        />
-        <Button
-          disabled={!url || disabled}
-          loading={loading}
-          variant="contained"
-          size="small"
-          sx={{ borderRadius: '6px' }}
-          onClick={onImport}
-        >
-          {t('profiles.page.actions.import')}
-        </Button>
-        <Button
-          variant="contained"
-          size="small"
-          sx={{ borderRadius: '6px' }}
-          onClick={() => viewerRef.current?.create()}
-        >
-          {t('shared.actions.new')}
-        </Button>
-      </Stack>
-
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={onDragEnd}
-      >
+      <Box sx={{ display: 'flex', height: '100%', gap: 2, p: '10px', boxSizing: 'border-box' }}>
+        {/* 左侧：侧边分组导航栏 */}
         <Box
           sx={{
-            pl: '10px',
-            pr: '10px',
-            height: 'calc(100% - 48px)',
-            overflowY: 'auto',
+            width: 200,
+            flexShrink: 0,
+            borderRight: 1,
+            borderColor: dividercolor,
+            pr: 2,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+            height: '100%',
           }}
         >
-          <Box sx={{ mb: 1.5 }}>
-            <Grid container spacing={{ xs: 1, lg: 1 }}>
-              <SortableContext
-                items={profileItems.map((x) => {
-                  return x.uid
-                })}
+          <Box sx={{ flex: 1, overflowY: 'auto' }}>
+            <Typography
+              variant="subtitle2"
+              sx={{ fontWeight: 600, mb: 1, pl: 1, opacity: 0.8 }}
+            >
+              订阅分组
+            </Typography>
+            <List
+              dense
+              sx={{
+                py: 0,
+                '& .MuiListItemButton-root': {
+                  borderRadius: '6px',
+                  mb: 0.5,
+                },
+              }}
+            >
+              <ListItemButton
+                selected={activeTab === 'all'}
+                onClick={() => setActiveTab('all')}
               >
-                {profileItems.map((item) => (
-                  <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }} key={item.file}>
-                    <ProfileItem
-                      id={item.uid}
-                      selected={profiles.current === item.uid}
-                      activating={activatings.includes(item.uid)}
-                      itemData={item}
-                      mutateProfiles={mutateProfiles}
-                      onSelect={(f) => onSelect(item.uid, f)}
-                      onEdit={() => viewerRef.current?.edit(item)}
+                <ListItemText primary="全部" />
+                <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+                  ({profileItems.length})
+                </Typography>
+              </ListItemButton>
+              {groups.map((group) => (
+                <ListItemButton
+                  key={group.id}
+                  selected={activeTab === group.id}
+                  onClick={() => setActiveTab(group.id)}
+                >
+                  <ListItemText
+                    primary={
+                      <Typography noWrap variant="body2" sx={{ fontWeight: 500 }}>
+                        {group.name}
+                      </Typography>
+                    }
+                    secondary={
+                      group.remark ? (
+                        <Typography noWrap variant="caption" sx={{ display: 'block', opacity: 0.7 }}>
+                          {group.remark}
+                        </Typography>
+                      ) : undefined
+                    }
+                  />
+                  <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+                    ({group.uids.length})
+                  </Typography>
+                </ListItemButton>
+              ))}
+              <ListItemButton
+                selected={activeTab === 'uncategorized'}
+                onClick={() => setActiveTab('uncategorized')}
+              >
+                <ListItemText primary="未分类" />
+                <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+                  ({uncategorizedCount})
+                </Typography>
+              </ListItemButton>
+            </List>
+          </Box>
+
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<FolderOpenRounded />}
+            onClick={() => groupsManagerRef.current?.open()}
+            sx={{ mt: 1, borderRadius: '6px', width: '100%', py: 1 }}
+          >
+            分组管理
+          </Button>
+        </Box>
+
+        {/* 右侧：主操作与列表区 */}
+        <Box
+          sx={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            overflow: 'hidden',
+          }}
+        >
+          <Stack
+            direction="row"
+            spacing={1}
+            sx={{
+              mb: 1.5,
+              height: '36px',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            <BaseStyledTextField
+              value={url}
+              variant="outlined"
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+                  return
+                }
+                if (!url || disabled || loading) {
+                  return
+                }
+                event.preventDefault()
+                void onImport()
+              }}
+              placeholder={t('profiles.page.importForm.placeholder')}
+              slotProps={{
+                input: {
+                  sx: { pr: 1 },
+                  endAdornment: !url ? (
+                    <IconButton
+                      size="small"
+                      sx={{ p: 0.5 }}
+                      title={t('profiles.page.importForm.actions.paste')}
+                      onClick={onCopyLink}
+                    >
+                      <ContentPasteRounded fontSize="inherit" />
+                    </IconButton>
+                  ) : (
+                    <IconButton
+                      size="small"
+                      sx={{ p: 0.5 }}
+                      title={t('shared.actions.clear')}
+                      onClick={() => setUrl('')}
+                    >
+                      <ClearRounded fontSize="inherit" />
+                    </IconButton>
+                  ),
+                },
+              }}
+            />
+            <Button
+              disabled={!url || disabled}
+              loading={loading}
+              variant="contained"
+              size="small"
+              sx={{ borderRadius: '6px' }}
+              onClick={onImport}
+            >
+              {t('profiles.page.actions.import')}
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              sx={{ borderRadius: '6px' }}
+              onClick={() => viewerRef.current?.create()}
+            >
+              {t('shared.actions.new')}
+            </Button>
+          </Stack>
+
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={onDragEnd}
+          >
+            <Box
+              sx={{
+                flex: 1,
+                overflowY: 'auto',
+                pr: '4px',
+              }}
+            >
+              <Box sx={{ mb: 1.5 }}>
+                <Grid container spacing={{ xs: 1, lg: 1 }}>
+                  <SortableContext
+                    items={filteredProfileItems.slice(0, displayLimit).map((x) => {
+                      return x.uid
+                    })}
+                  >
+                    {filteredProfileItems.slice(0, displayLimit).map((item) => (
+                      <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }} key={item.file}>
+                        <ProfileItem
+                          id={item.uid}
+                          selected={profiles.current === item.uid}
+                          activating={activatings.includes(item.uid)}
+                          itemData={item}
+                          mutateProfiles={mutateProfiles}
+                          onSelect={(f) => onSelect(item.uid, f)}
+                          onEdit={() => viewerRef.current?.edit(item)}
+                          onSave={async (prev, curr) => {
+                            if (prev !== curr && profiles.current === item.uid) {
+                              await onEnhance(false)
+                            }
+                          }}
+                          onDelete={() => {
+                            if (batchMode) {
+                              toggleProfileSelection(item.uid)
+                            } else {
+                              onDelete(item.uid)
+                            }
+                          }}
+                          batchMode={batchMode}
+                          isSelected={selectedProfiles.has(item.uid)}
+                          onSelectionChange={() => toggleProfileSelection(item.uid)}
+                        />
+                      </Grid>
+                    ))}
+                  </SortableContext>
+                </Grid>
+                {filteredProfileItems.length > displayLimit && (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={() => setDisplayLimit((prev) => prev + 48)}
+                      sx={{ borderRadius: '6px' }}
+                    >
+                      加载更多 (余下 {filteredProfileItems.length - displayLimit} 个)
+                    </Button>
+                  </Box>
+                )}
+              </Box>
+              <Divider
+                variant="middle"
+                flexItem
+                sx={{ width: `calc(100% - 32px)`, borderColor: dividercolor }}
+              ></Divider>
+              <Box sx={{ mt: 1.5, mb: '10px' }}>
+                <Grid container spacing={{ xs: 1, lg: 1 }}>
+                  <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
+                    <ProfileMore
+                      id="Merge"
                       onSave={async (prev, curr) => {
-                        if (prev !== curr && profiles.current === item.uid) {
+                        if (prev !== curr) {
                           await onEnhance(false)
-                          //  await restartCore();
-                          //   Notice.success(t("settings.feedback.notifications.clash.restartSuccess"), 1000);
                         }
                       }}
-                      onDelete={() => {
-                        if (batchMode) {
-                          toggleProfileSelection(item.uid)
-                        } else {
-                          onDelete(item.uid)
-                        }
-                      }}
-                      batchMode={batchMode}
-                      isSelected={selectedProfiles.has(item.uid)}
-                      onSelectionChange={() => toggleProfileSelection(item.uid)}
                     />
                   </Grid>
-                ))}
-              </SortableContext>
-            </Grid>
-          </Box>
-          <Divider
-            variant="middle"
-            flexItem
-            sx={{ width: `calc(100% - 32px)`, borderColor: dividercolor }}
-          ></Divider>
-          <Box sx={{ mt: 1.5, mb: '10px' }}>
-            <Grid container spacing={{ xs: 1, lg: 1 }}>
-              <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
-                <ProfileMore
-                  id="Merge"
-                  onSave={async (prev, curr) => {
-                    if (prev !== curr) {
-                      await onEnhance(false)
-                    }
-                  }}
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
-                <ProfileMore
-                  id="Script"
-                  logInfo={chainLogs['Script']}
-                  onSave={async (prev, curr) => {
-                    if (prev !== curr) {
-                      await onEnhance(false)
-                    }
-                  }}
-                />
-              </Grid>
-            </Grid>
-          </Box>
+                  <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
+                    <ProfileMore
+                      id="Script"
+                      logInfo={chainLogs['Script']}
+                      onSave={async (prev, curr) => {
+                        if (prev !== curr) {
+                          await onEnhance(false)
+                        }
+                      }}
+                    />
+                  </Grid>
+                </Grid>
+              </Box>
+            </Box>
+            <DragOverlay />
+          </DndContext>
         </Box>
-        <DragOverlay />
-      </DndContext>
+      </Box>
 
       <ProfileViewer
         ref={viewerRef}
         onChange={async (isActivating) => {
           mutateProfiles()
-          // 只有更改当前激活的配置时才触发全局重新加载
           if (isActivating) {
             await onEnhance(false)
           }
         }}
       />
       <ConfigViewer ref={configRef} />
+      <GroupsManagerDialog ref={groupsManagerRef} />
     </BasePage>
   )
 }

@@ -3,7 +3,6 @@ import {
   DndContext,
   DragEndEvent,
   DragOverlay,
-  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
@@ -116,7 +115,7 @@ const ProfilePage = () => {
   const { groups, setProfileGroup } = useSubscriptionGroups()
   const [activeTab, setActiveTab] = useState('all')
   const groupsManagerRef = useRef<DialogRef>(null)
-  const [displayLimit, setDisplayLimit] = useState(32)
+  // No display limit — show all subscriptions at once
 
   // Reset tab if active group is deleted
   useEffect(() => {
@@ -128,10 +127,7 @@ const ProfilePage = () => {
     }
   }, [groups, activeTab])
 
-  // Reset display limit when switching tabs
-  useEffect(() => {
-    setDisplayLimit(32)
-  }, [activeTab])
+
 
   // Batch selection states
   const [batchMode, setBatchMode] = useState(false)
@@ -194,9 +190,8 @@ const ProfilePage = () => {
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
     }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
+    // NOTE: KeyboardSensor intentionally removed — dnd-kit registers document-level
+    // keydown listeners that intercept ALL keyboard events, breaking input fields.
   )
   const { current } = location.state || {}
 
@@ -928,20 +923,7 @@ const ProfilePage = () => {
                 <CheckBoxOutlineBlankRounded />
               </IconButton>
 
-              <Button
-                size="small"
-                variant="outlined"
-                color="warning"
-                onClick={async () => {
-                  try {
-                    await openDevTools()
-                  } catch (e) {
-                    console.error(e)
-                  }
-                }}
-              >
-                调试控制台
-              </Button>
+
 
               <IconButton
                 size="small"
@@ -1226,11 +1208,11 @@ const ProfilePage = () => {
               <Box sx={{ mb: 1.5 }}>
                 <Grid container spacing={{ xs: 1, lg: 1 }}>
                   <SortableContext
-                    items={filteredProfileItems.slice(0, displayLimit).map((x) => {
+                    items={filteredProfileItems.map((x) => {
                       return x.uid
                     })}
                   >
-                    {filteredProfileItems.slice(0, displayLimit).map((item) => (
+                    {filteredProfileItems.map((item) => (
                       <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }} key={item.file}>
                         <ProfileItem
                           id={item.uid}
@@ -1260,18 +1242,6 @@ const ProfilePage = () => {
                     ))}
                   </SortableContext>
                 </Grid>
-                {filteredProfileItems.length > displayLimit && (
-                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      onClick={() => setDisplayLimit((prev) => prev + 48)}
-                      sx={{ borderRadius: '6px' }}
-                    >
-                      加载更多 (余下 {filteredProfileItems.length - displayLimit} 个)
-                    </Button>
-                  </Box>
-                )}
               </Box>
               <Divider
                 variant="middle"

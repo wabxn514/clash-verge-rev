@@ -45,7 +45,13 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
     close: () => setOpen(false),
   }))
 
-  const profileItems = (profiles?.items || []).filter((item) => item && item.uid)
+  const profileItems = (profiles?.items || []).filter(
+    (item) =>
+      item &&
+      item.uid &&
+      (item.type === 'remote' || item.type === 'local') &&
+      item.name,
+  )
 
   const handleAccordionChange = (groupId: string, expanded: boolean) => {
     if (expanded) {

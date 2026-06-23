@@ -238,7 +238,7 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                       <Button
                         size="small"
                         color="error"
-                        variant="outlined"
+                        variant="contained"
                         startIcon={<DeleteRounded />}
                         onClick={() => handleDeleteGroup(group.id)}
                       >

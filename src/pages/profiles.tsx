@@ -413,7 +413,32 @@ const ProfilePage = () => {
     const targetGroup = groups.find((g) => g.id === activeTab)
     if (!targetGroup) return []
     const groupUids = new Set(targetGroup.uids)
-    return profileItems.filter((item) => groupUids.has(item.uid))
+    const items = profileItems.filter((item) => groupUids.has(item.uid))
+
+    return [...items].sort((a, b) => {
+      const nameA = a.name || ''
+      const nameB = b.name || ''
+
+      const getSortCategory = (name: string) => {
+        const first = name.trim().charAt(0)
+        if (!first) return 4
+        if (/[\u4e00-\u9fa5]/.test(first)) return 3
+        if (/\d/.test(first)) return 2
+        return 1
+      }
+
+      const catA = getSortCategory(nameA)
+      const catB = getSortCategory(nameB)
+
+      if (catA !== catB) {
+        return catA - catB
+      }
+
+      return nameA.trim().localeCompare(nameB.trim(), 'zh', {
+        numeric: true,
+        sensitivity: 'base',
+      })
+    })
   }, [profileItems, activeTab, groups])
 
   const activeGroupName = useMemo(() => {

@@ -155,9 +155,18 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                 onChange={(_, expanded) =>
                   handleAccordionChange(group.id, expanded)
                 }
-                sx={{ mb: 1, '&:before': { display: 'none' } }}
+                sx={{ mb: '6px', '&:before': { display: 'none' } }}
               >
-                <AccordionSummary expandIcon={<ExpandMoreRounded />}>
+                <AccordionSummary
+                  expandIcon={<ExpandMoreRounded />}
+                  sx={{
+                    minHeight: '40px !important',
+                    height: 40,
+                    '& .MuiAccordionSummary-content': {
+                      margin: '0 !important',
+                    },
+                  }}
+                >
                   <Stack
                     direction="row"
                     spacing={1}
@@ -204,7 +213,7 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                     <FormGroup
                       row
                       sx={{
-                        maxHeight: '400px',
+                        maxHeight: '480px',
                         overflowY: 'auto',
                         pl: 1,
                         display: 'flex',

@@ -123,7 +123,12 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
     <BaseDialog
       open={open}
       title="订阅分组管理"
-      contentSx={{ width: { xs: '100%', sm: 600 }, pb: 2, maxHeight: '90vh' }}
+      contentSx={{
+        width: { xs: '100%', sm: 600 },
+        pb: 2,
+        height: 1200,
+        maxHeight: '95vh',
+      }}
       disableOk
       cancelBtn="关闭"
       onClose={() => setOpen(false)}

@@ -204,7 +204,7 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                     <FormGroup
                       row
                       sx={{
-                        maxHeight: '180px',
+                        maxHeight: '400px',
                         overflowY: 'auto',
                         pl: 1,
                         display: 'flex',

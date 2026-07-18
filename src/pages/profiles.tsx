@@ -165,7 +165,7 @@ const SortableGroupItem = ({
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.6 : 1,
+    opacity: isDragging ? 0 : 1,
     zIndex: isDragging ? 1000 : undefined,
   }
 
@@ -180,30 +180,23 @@ const SortableGroupItem = ({
         mb: 0.5,
         position: 'relative',
         pl: 1,
-        '& .group-drag-handle': {
-          opacity: 0,
-          transition: 'opacity 0.2s',
-          cursor: 'grab',
-        },
-        '&:hover .group-drag-handle': {
-          opacity: 0.5,
-        },
-        '&:hover .group-drag-handle:hover': {
-          opacity: 1,
-        },
       }}
     >
       <Box
-        className="group-drag-handle"
         sx={{
           display: 'flex',
           alignItems: 'center',
           mr: 0.5,
+          cursor: 'move',
+          color: 'text.secondary',
+          '&:hover': {
+            color: 'text.primary',
+          },
         }}
         {...attributes}
         {...listeners}
       >
-        <DragIndicatorRounded sx={{ fontSize: '18px' }} />
+        <DragIndicatorRounded sx={{ fontSize: '18px', cursor: 'move' }} />
       </Box>
 
       <ListItemText
@@ -255,6 +248,8 @@ const ProfilePage = () => {
   const { groups, setProfileGroup, reorderGroups } = useSubscriptionGroups()
   const [activeTab, setActiveTab] = useState('all')
   const groupsManagerRef = useRef<DialogRef>(null)
+
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null)
 
   const groupSensors = useSensors(
     useSensor(PointerSensor, {
@@ -421,10 +416,11 @@ const ProfilePage = () => {
 
       const getSortCategory = (name: string) => {
         const first = name.trim().charAt(0)
-        if (!first) return 4
-        if (/[\u4e00-\u9fa5]/.test(first)) return 3
-        if (/\d/.test(first)) return 2
-        return 1
+        if (!first) return 5
+        if (/[a-zA-Z]/.test(first)) return 3 // 字母
+        if (/\d/.test(first)) return 2 // 数字
+        if (/[\u4e00-\u9fa5]/.test(first)) return 4 // 汉字
+        return 1 // 字符/符号
       }
 
       const catA = getSortCategory(nameA)
@@ -434,10 +430,14 @@ const ProfilePage = () => {
         return catA - catB
       }
 
-      return nameA.trim().localeCompare(nameB.trim(), 'zh', {
-        numeric: true,
-        sensitivity: 'base',
-      })
+      const comp = nameA
+        .trim()
+        .toLowerCase()
+        .localeCompare(nameB.trim().toLowerCase(), 'zh', {
+          numeric: true,
+        })
+      if (comp !== 0) return comp
+      return nameA.trim().localeCompare(nameB.trim())
     })
   }, [profileItems, activeTab, groups])
 
@@ -1168,7 +1168,13 @@ const ProfilePage = () => {
               <DndContext
                 sensors={groupSensors}
                 collisionDetection={closestCenter}
-                onDragEnd={onGroupsDragEnd}
+                onDragStart={(event) =>
+                  setActiveGroupId(event.active.id.toString())
+                }
+                onDragEnd={async (event) => {
+                  await onGroupsDragEnd(event)
+                  setActiveGroupId(null)
+                }}
               >
                 <SortableContext
                   items={groups.map((g) => g.id)}
@@ -1183,6 +1189,73 @@ const ProfilePage = () => {
                     />
                   ))}
                 </SortableContext>
+                <DragOverlay
+                  adjustScale={false}
+                  dropAnimation={{
+                    duration: 200,
+                    easing: 'cubic-bezier(0.18, 0.67, 0.6, 1.22)',
+                  }}
+                >
+                  {activeGroupId
+                    ? (() => {
+                        const group = groups.find((g) => g.id === activeGroupId)
+                        if (!group) return null
+                        return (
+                          <ListItemButton
+                            selected={activeTab === group.id}
+                            sx={{
+                              borderRadius: '6px',
+                              backgroundColor: 'background.paper',
+                              boxShadow: 3,
+                              opacity: 0.8,
+                              display: 'flex',
+                              alignItems: 'center',
+                              pl: 1,
+                            }}
+                          >
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                mr: 0.5,
+                                color: 'text.primary',
+                              }}
+                            >
+                              <DragIndicatorRounded sx={{ fontSize: '18px' }} />
+                            </Box>
+                            <ListItemText
+                              primary={
+                                <Typography
+                                  noWrap
+                                  variant="body2"
+                                  sx={{ fontWeight: 500 }}
+                                >
+                                  {group.name}
+                                </Typography>
+                              }
+                              secondary={
+                                group.remark ? (
+                                  <Typography
+                                    noWrap
+                                    variant="caption"
+                                    sx={{ display: 'block', opacity: 0.7 }}
+                                  >
+                                    {group.remark}
+                                  </Typography>
+                                ) : undefined
+                              }
+                            />
+                            <Typography
+                              variant="caption"
+                              sx={{ ml: 1, opacity: 0.6 }}
+                            >
+                              ({group.uids.length})
+                            </Typography>
+                          </ListItemButton>
+                        )
+                      })()
+                    : null}
+                </DragOverlay>
               </DndContext>
               <ListItemButton
                 selected={activeTab === 'uncategorized'}

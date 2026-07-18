@@ -45,38 +45,13 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
     close: () => setOpen(false),
   }))
 
-  const profileItems = [...(profiles?.items || [])]
-    .filter(
-      (item) =>
-        item &&
-        item.uid &&
-        (item.type === 'remote' || item.type === 'local') &&
-        item.name,
-    )
-    .sort((a, b) => {
-      const nameA = a.name || ''
-      const nameB = b.name || ''
-
-      const getSortCategory = (name: string) => {
-        const first = name.trim().charAt(0)
-        if (!first) return 4
-        if (/[\u4e00-\u9fa5]/.test(first)) return 3
-        if (/\d/.test(first)) return 2
-        return 1
-      }
-
-      const catA = getSortCategory(nameA)
-      const catB = getSortCategory(nameB)
-
-      if (catA !== catB) {
-        return catA - catB
-      }
-
-      return nameA.trim().localeCompare(nameB.trim(), 'zh', {
-        numeric: true,
-        sensitivity: 'base',
-      })
-    })
+  const profileItems = (profiles?.items || []).filter(
+    (item) =>
+      item &&
+      item.uid &&
+      (item.type === 'remote' || item.type === 'local') &&
+      item.name,
+  )
 
   const handleAccordionChange = (groupId: string, expanded: boolean) => {
     if (expanded) {
@@ -148,7 +123,7 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
     <BaseDialog
       open={open}
       title="订阅分组管理"
-      contentSx={{ width: { xs: '100%', sm: 600 }, pb: 2, maxHeight: '80vh' }}
+      contentSx={{ width: { xs: '100%', sm: 600 }, pb: 2, maxHeight: '90vh' }}
       disableOk
       cancelBtn="关闭"
       onClose={() => setOpen(false)}

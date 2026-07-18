@@ -7,13 +7,20 @@ import {
   useSensor,
   useSensors,
 } from '@dnd-kit/core'
-import { SortableContext, type SortingStrategy } from '@dnd-kit/sortable'
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  type SortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import {
   CheckBoxOutlineBlankRounded,
   CheckBoxRounded,
   ClearRounded,
   ContentPasteRounded,
   DeleteRounded,
+  DragIndicatorRounded,
   FolderOpenRounded,
   IndeterminateCheckBoxRounded,
   LocalFireDepartmentRounded,
@@ -57,7 +64,10 @@ import { SortableProfileItem } from '@/components/profile/sortable-profile-item'
 import { ConfigViewer } from '@/components/setting/mods/config-viewer'
 import { useListen } from '@/hooks/use-listen'
 import { useProfiles } from '@/hooks/use-profiles'
-import { useSubscriptionGroups } from '@/hooks/use-subscription-groups'
+import {
+  useSubscriptionGroups,
+  type ISubscriptionGroup,
+} from '@/hooks/use-subscription-groups'
 import {
   createProfile,
   deleteProfile,
@@ -134,6 +144,93 @@ const debugProfileSwitch = (action: string, profile: string, extra?: any) => {
   debugLog(`[Profile-Debug][${timestamp}] ${action}: ${profile}`, extra || '')
 }
 
+const SortableGroupItem = ({
+  group,
+  activeTab,
+  setActiveTab,
+}: {
+  group: ISubscriptionGroup
+  activeTab: string
+  setActiveTab: (tab: string) => void
+}) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: group.id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    zIndex: isDragging ? 1000 : undefined,
+  }
+
+  return (
+    <ListItemButton
+      ref={setNodeRef}
+      style={style}
+      selected={activeTab === group.id}
+      onClick={() => setActiveTab(group.id)}
+      sx={{
+        borderRadius: '6px',
+        mb: 0.5,
+        position: 'relative',
+        pl: 1,
+        '& .group-drag-handle': {
+          opacity: 0,
+          transition: 'opacity 0.2s',
+          cursor: 'grab',
+        },
+        '&:hover .group-drag-handle': {
+          opacity: 0.5,
+        },
+        '&:hover .group-drag-handle:hover': {
+          opacity: 1,
+        },
+      }}
+    >
+      <Box
+        className="group-drag-handle"
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          mr: 0.5,
+        }}
+        {...attributes}
+        {...listeners}
+      >
+        <DragIndicatorRounded sx={{ fontSize: '18px' }} />
+      </Box>
+
+      <ListItemText
+        primary={
+          <Typography noWrap variant="body2" sx={{ fontWeight: 500 }}>
+            {group.name}
+          </Typography>
+        }
+        secondary={
+          group.remark ? (
+            <Typography
+              noWrap
+              variant="caption"
+              sx={{ display: 'block', opacity: 0.7 }}
+            >
+              {group.remark}
+            </Typography>
+          ) : undefined
+        }
+      />
+      <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+        ({group.uids.length})
+      </Typography>
+    </ListItemButton>
+  )
+}
+
 const ProfilePage = () => {
   const { t } = useTranslation()
   const location = useLocation()
@@ -155,9 +252,15 @@ const ProfilePage = () => {
 
   const loadingCache = useLoadingCache()
 
-  const { groups, setProfileGroup } = useSubscriptionGroups()
+  const { groups, setProfileGroup, reorderGroups } = useSubscriptionGroups()
   const [activeTab, setActiveTab] = useState('all')
   const groupsManagerRef = useRef<DialogRef>(null)
+
+  const groupSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+  )
   // No display limit — show all subscriptions at once
 
   // Reset tab if active group is deleted
@@ -430,6 +533,13 @@ const ProfilePage = () => {
         await reorderProfile(active.id.toString(), over.id.toString())
         mutateProfiles()
       }
+    }
+  }
+
+  const onGroupsDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event
+    if (over && active.id !== over.id) {
+      await reorderGroups(active.id.toString(), over.id.toString())
     }
   }
 
@@ -1030,39 +1140,25 @@ const ProfilePage = () => {
                   ({profileItems.length})
                 </Typography>
               </ListItemButton>
-              {groups.map((group) => (
-                <ListItemButton
-                  key={group.id}
-                  selected={activeTab === group.id}
-                  onClick={() => setActiveTab(group.id)}
+              <DndContext
+                sensors={groupSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={onGroupsDragEnd}
+              >
+                <SortableContext
+                  items={groups.map((g) => g.id)}
+                  strategy={verticalListSortingStrategy}
                 >
-                  <ListItemText
-                    primary={
-                      <Typography
-                        noWrap
-                        variant="body2"
-                        sx={{ fontWeight: 500 }}
-                      >
-                        {group.name}
-                      </Typography>
-                    }
-                    secondary={
-                      group.remark ? (
-                        <Typography
-                          noWrap
-                          variant="caption"
-                          sx={{ display: 'block', opacity: 0.7 }}
-                        >
-                          {group.remark}
-                        </Typography>
-                      ) : undefined
-                    }
-                  />
-                  <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
-                    ({group.uids.length})
-                  </Typography>
-                </ListItemButton>
-              ))}
+                  {groups.map((group) => (
+                    <SortableGroupItem
+                      key={group.id}
+                      group={group}
+                      activeTab={activeTab}
+                      setActiveTab={setActiveTab}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
               <ListItemButton
                 selected={activeTab === 'uncategorized'}
                 onClick={() => setActiveTab('uncategorized')}

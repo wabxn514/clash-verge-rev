@@ -235,13 +235,47 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                               />
                             }
                             label={
-                              <Typography
-                                variant="body2"
-                                noWrap
-                                title={item.name || '未命名配置'}
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  width: '100%',
+                                }}
                               >
-                                {item.name || '未命名配置'}
-                              </Typography>
+                                <Typography
+                                  variant="body2"
+                                  noWrap
+                                  title={item.name || '未命名配置'}
+                                  sx={{ fontWeight: 500 }}
+                                >
+                                  {item.name || '未命名配置'}
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  noWrap
+                                  sx={{ fontSize: '10px' }}
+                                  title={
+                                    groups
+                                      .filter((g) => g.uids.includes(uid))
+                                      .map((g) => g.name).length > 0
+                                      ? `所属分组: ${groups
+                                          .filter((g) => g.uids.includes(uid))
+                                          .map((g) => g.name)
+                                          .join(', ')}`
+                                      : '暂无分组'
+                                  }
+                                >
+                                  {(() => {
+                                    const belongs = groups
+                                      .filter((g) => g.uids.includes(uid))
+                                      .map((g) => g.name)
+                                    return belongs.length > 0
+                                      ? belongs.join(', ')
+                                      : '无'
+                                  })()}
+                                </Typography>
+                              </Box>
                             }
                           />
                         )

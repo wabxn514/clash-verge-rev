@@ -141,12 +141,24 @@ export const useSubscriptionGroups = () => {
     await updateGroupsFile(newGroups)
   }
 
+  const reorderGroups = async (activeId: string, overId: string) => {
+    const activeIndex = groups.findIndex((g) => g.id === activeId)
+    const overIndex = groups.findIndex((g) => g.id === overId)
+    if (activeIndex !== -1 && overIndex !== -1) {
+      const newGroups = [...groups]
+      const [removed] = newGroups.splice(activeIndex, 1)
+      newGroups.splice(overIndex, 0, removed)
+      await updateGroupsFile(newGroups)
+    }
+  }
+
   return {
     groups,
     addGroup,
     updateGroup,
     deleteGroup,
     setProfileGroup,
+    reorderGroups,
     refetchGroups: refetch,
   }
 }

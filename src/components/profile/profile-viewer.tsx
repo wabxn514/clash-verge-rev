@@ -16,7 +16,8 @@ import { useTranslation } from 'react-i18next'
 
 import { BaseDialog, Switch } from '@/components/base'
 import { useProfiles } from '@/hooks/use-profiles'
-import { createProfile, patchProfile } from '@/services/cmds'
+import { useSubscriptionGroups } from '@/hooks/use-subscription-groups'
+import { createProfile, patchProfile, getProfiles } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import { version } from '@root/package.json'
 
@@ -41,6 +42,8 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
   const [openType, setOpenType] = useState<'new' | 'edit'>('new')
   const [loading, setLoading] = useState(false)
   const { profiles } = useProfiles()
+  const { groups, setProfileGroup } = useSubscriptionGroups()
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('')
 
   // file input
   const fileDataRef = useRef<string | null>(null)
@@ -62,6 +65,7 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
   useImperativeHandle(ref, () => ({
     create: () => {
       setOpenType('new')
+      setSelectedGroupId('')
       setOpen(true)
     },
     edit: (item: IProfileItem) => {
@@ -69,6 +73,8 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
         Object.entries(item).forEach(([key, value]) => {
           setValue(key as any, value)
         })
+        const foundGroup = groups.find((g) => g.uids.includes(item.uid))
+        setSelectedGroupId(foundGroup ? foundGroup.id : '')
       }
       setOpenType('edit')
       setOpen(true)
@@ -127,54 +133,75 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
         }
 
         // 执行创建或更新操作，本地配置不需要回退机制
-        if (!isRemote) {
-          if (openType === 'new') {
+        let createdUid: string | null = null
+        if (openType === 'new') {
+          const oldUids =
+            profiles?.items?.filter((i) => i && i.uid).map((i) => i.uid) || []
+          if (!isRemote) {
             await createProfile(item, fileDataRef.current)
           } else {
-            if (!form.uid) throw new Error('UID not found')
-            await patchProfile(form.uid, item)
+            // 远程配置使用回退机制
+            try {
+              await createProfile(item, fileDataRef.current)
+            } catch {
+              // 首次创建失败，尝试使用自身代理
+              showNotice.info(
+                'profiles.modals.profileForm.feedback.notifications.creationRetry',
+              )
+              const retryItem = {
+                ...item,
+                option: {
+                  ...item.option,
+                  with_proxy: false,
+                  self_proxy: true,
+                },
+              }
+              await createProfile(retryItem, fileDataRef.current)
+              showNotice.success(
+                'profiles.modals.profileForm.feedback.notifications.creationSuccess',
+              )
+            }
+          }
+          // 获取最新的 profiles 列表，找到新创建 of uid
+          const newProfiles = await getProfiles()
+          const newUids =
+            newProfiles?.items?.filter((i) => i && i.uid).map((i) => i.uid) ||
+            []
+          createdUid = newUids.find((uid) => !oldUids.includes(uid)) || null
+
+          if (createdUid && selectedGroupId) {
+            await setProfileGroup(createdUid, selectedGroupId)
           }
         } else {
-          // 远程配置使用回退机制
-          try {
-            // 尝试正常操作
-            if (openType === 'new') {
-              await createProfile(item, fileDataRef.current)
-            } else {
-              if (!form.uid) throw new Error('UID not found')
+          if (!form.uid) throw new Error('UID not found')
+          if (!isRemote) {
+            await patchProfile(form.uid, item)
+          } else {
+            // 远程配置使用回退机制
+            try {
               await patchProfile(form.uid, item)
-            }
-          } catch {
-            // 首次创建/更新失败，尝试使用自身代理
-            showNotice.info(
-              'profiles.modals.profileForm.feedback.notifications.creationRetry',
-            )
-
-            // 使用自身代理的配置
-            const retryItem = {
-              ...item,
-              option: {
-                ...item.option,
-                with_proxy: false,
-                self_proxy: true,
-              },
-            }
-
-            // 使用自身代理再次尝试
-            if (openType === 'new') {
-              await createProfile(retryItem, fileDataRef.current)
-            } else {
-              if (!form.uid) throw new Error('UID not found')
+            } catch {
+              // 首次更新失败，尝试使用自身代理
+              showNotice.info(
+                'profiles.modals.profileForm.feedback.notifications.creationRetry',
+              )
+              const retryItem = {
+                ...item,
+                option: {
+                  ...item.option,
+                  with_proxy: false,
+                  self_proxy: true,
+                },
+              }
               await patchProfile(form.uid, retryItem)
-
               // 编辑模式下恢复原始代理设置
               await patchProfile(form.uid, { option: originalOptions })
+              showNotice.success(
+                'profiles.modals.profileForm.feedback.notifications.creationSuccess',
+              )
             }
-
-            showNotice.success(
-              'profiles.modals.profileForm.feedback.notifications.creationSuccess',
-            )
           }
+          await setProfileGroup(form.uid, selectedGroupId || null)
         }
 
         // 成功后的操作
@@ -281,6 +308,23 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
           }}
         />
       )}
+
+      <FormControl size="small" fullWidth sx={{ mt: 1.5, mb: 1 }}>
+        <InputLabel id="profile-group-select-label">所属分组</InputLabel>
+        <Select
+          labelId="profile-group-select-label"
+          value={selectedGroupId}
+          label="所属分组"
+          onChange={(e) => setSelectedGroupId(e.target.value as string)}
+        >
+          <MenuItem value="">无</MenuItem>
+          {groups.map((group) => (
+            <MenuItem key={group.id} value={group.id}>
+              {group.name}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
 
       {isRemote && (
         <>

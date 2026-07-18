@@ -128,13 +128,15 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
         pb: 2,
         height: 1200,
         maxHeight: '95vh',
+        display: 'flex',
+        flexDirection: 'column',
       }}
       disableOk
       cancelBtn="关闭"
       onClose={() => setOpen(false)}
       onCancel={() => setOpen(false)}
     >
-      <Box sx={{ mb: 2, maxHeight: '350px', overflowY: 'auto' }}>
+      <Box sx={{ mb: 2, flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {groups.length === 0 ? (
           <Typography
             variant="body2"

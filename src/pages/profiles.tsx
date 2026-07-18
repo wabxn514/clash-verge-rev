@@ -179,6 +179,12 @@ const SortableGroupItem = ({
         mb: 0.5,
         position: 'relative',
         pl: 1,
+        boxShadow: 'none !important',
+        outline: 'none !important',
+        '&:focus, &:active, &.Mui-focusVisible': {
+          boxShadow: 'none !important',
+          outline: 'none !important',
+        },
       }}
     >
       <Box

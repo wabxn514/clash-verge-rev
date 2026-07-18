@@ -735,46 +735,22 @@ const ProfilePage = () => {
       return onUpdateAll()
     }
 
-    const targetUids =
+    const uidsInGroup =
       activeTab === 'uncategorized'
         ? filteredProfileItems
             .filter((item) => item.type === 'remote')
             .map((item) => item.uid)
         : groups.find((g) => g.id === activeTab)?.uids || []
 
+    const targetUids = uidsInGroup.filter((uid) => {
+      const item = profileItems.find((p) => p.uid === uid)
+      return item && item.type === 'remote' && !loadingCache.has(uid)
+    })
+
     if (targetUids.length === 0) return
 
-    const throttleMutate = throttle(mutateProfiles, 2000, {
-      trailing: true,
-    })
-
-    const updateOne = async (uid: string) => {
-      try {
-        await updateProfile(uid)
-        throttleMutate()
-      } catch (err: any) {
-        console.error(`更新订阅 ${uid} 失败:`, err)
-      } finally {
-        setLoadingCache((cache) => ({ ...cache, [uid]: false }))
-      }
-    }
-
-    return new Promise((resolve) => {
-      setLoadingCache((cache) => {
-        const itemsToUpdate = targetUids.filter((uid) => {
-          const item = profileItems.find((p) => p.uid === uid)
-          return item && item.type === 'remote' && !cache[uid]
-        })
-        const change = Object.fromEntries(
-          itemsToUpdate.map((uid) => [uid, true]),
-        )
-
-        Promise.allSettled(itemsToUpdate.map((uid) => updateOne(uid))).then(
-          resolve,
-        )
-        return { ...cache, ...change }
-      })
-    })
+    setLoadingProfiles(targetUids, true)
+    await runProfileUpdates(targetUids)
   })
 
   const onCopyLink = async () => {

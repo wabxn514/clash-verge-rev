@@ -123,7 +123,7 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
     <BaseDialog
       open={open}
       title="订阅分组管理"
-      contentSx={{ width: { xs: '100%', sm: 480 }, pb: 2, maxHeight: '80vh' }}
+      contentSx={{ width: { xs: '100%', sm: 600 }, pb: 2, maxHeight: '80vh' }}
       disableOk
       cancelBtn="关闭"
       onClose={() => setOpen(false)}
@@ -195,7 +195,15 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                     </Typography>
 
                     <FormGroup
-                      sx={{ maxHeight: '180px', overflowY: 'auto', pl: 1 }}
+                      row
+                      sx={{
+                        maxHeight: '180px',
+                        overflowY: 'auto',
+                        pl: 1,
+                        display: 'flex',
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                      }}
                     >
                       {profileItems.map((item) => {
                         const uid = item.uid
@@ -205,6 +213,18 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                         return (
                           <FormControlLabel
                             key={uid}
+                            sx={{
+                              width: '33.33%',
+                              marginRight: 0,
+                              boxSizing: 'border-box',
+                              pr: 1.5,
+                              '& .MuiFormControlLabel-label': {
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                width: '100%',
+                              },
+                            }}
                             control={
                               <Checkbox
                                 size="small"
@@ -218,7 +238,7 @@ export const GroupsManagerDialog = forwardRef<DialogRef>((_, ref) => {
                               <Typography
                                 variant="body2"
                                 noWrap
-                                sx={{ maxWidth: '300px' }}
+                                title={item.name || '未命名配置'}
                               >
                                 {item.name || '未命名配置'}
                               </Typography>

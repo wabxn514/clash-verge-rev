@@ -34,12 +34,20 @@ export const getSubscriptionGroups = async (
         // 静默清理无效订阅 UID (即 orphan cleanup)
         if (validUids) {
           const validSet = new Set(validUids)
+          const seenUids = new Set<string>()
           let changed = false
           const cleanedGroups = data.groups.map((group) => {
-            const filteredUids = group.uids.filter((uid) => validSet.has(uid))
-            if (filteredUids.length !== group.uids.length) {
-              changed = true
-            }
+            const filteredUids = group.uids.filter((uid) => {
+              const isValid = validSet.has(uid)
+              const isNotDuplicate = !seenUids.has(uid)
+              if (isValid && isNotDuplicate) {
+                seenUids.add(uid)
+                return true
+              } else {
+                changed = true
+                return false
+              }
+            })
             return { ...group, uids: filteredUids }
           })
           if (changed) {
@@ -106,16 +114,20 @@ export const useSubscriptionGroups = () => {
     remark?: string,
     uids?: string[],
   ) => {
+    const targetUids = uids || []
     const newGroups = groups.map((g) => {
       if (g.id === id) {
         return {
           ...g,
           name,
           remark,
-          uids: uids !== undefined ? uids : g.uids,
+          uids: targetUids,
         }
       }
-      return g
+      return {
+        ...g,
+        uids: g.uids.filter((uid) => !targetUids.includes(uid)),
+      }
     })
     await updateGroupsFile(newGroups)
   }

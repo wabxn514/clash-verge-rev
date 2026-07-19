@@ -86,6 +86,7 @@ export const useSubscriptionGroups = () => {
     queryFn: () => getSubscriptionGroups(validUids),
     refetchOnWindowFocus: false,
     staleTime: 500,
+    placeholderData: { groups: [] },
   })
 
   const groups = data?.groups || []

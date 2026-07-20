@@ -22,7 +22,7 @@ const getFilePath = async () => {
   return await join(appDir, 'subscription_groups.json')
 }
 
-export const getSubscriptionGroups = async (
+const getSubscriptionGroups = async (
   validUids?: string[],
 ): Promise<ISubscriptionGroupsConfig> => {
   try {

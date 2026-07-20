@@ -3,28 +3,42 @@ import {
   DndContext,
   type DragEndEvent,
   DragOverlay,
-  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core'
 import {
   SortableContext,
-  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
   type SortingStrategy,
 } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import {
   CheckBoxOutlineBlankRounded,
   CheckBoxRounded,
   ClearRounded,
   ContentPasteRounded,
   DeleteRounded,
+  DragIndicatorRounded,
+  FolderOpenRounded,
   IndeterminateCheckBoxRounded,
   LocalFireDepartmentRounded,
   RefreshRounded,
   TextSnippetOutlined,
 } from '@mui/icons-material'
-import { Box, Button, Divider, Grid, IconButton, Stack } from '@mui/material'
+import {
+  Box,
+  Button,
+  Divider,
+  Grid,
+  IconButton,
+  List,
+  ListItemButton,
+  ListItemText,
+  Stack,
+  Typography,
+} from '@mui/material'
 import { listen, TauriEvent } from '@tauri-apps/api/event'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { readTextFile } from '@tauri-apps/plugin-fs'
@@ -40,6 +54,7 @@ import {
   BaseStyledTextField,
   type DialogRef,
 } from '@/components/base'
+import { GroupsManagerDialog } from '@/components/profile/groups-manager-dialog'
 import { ProfileMore } from '@/components/profile/profile-more'
 import {
   ProfileViewer,
@@ -49,6 +64,10 @@ import { SortableProfileItem } from '@/components/profile/sortable-profile-item'
 import { ConfigViewer } from '@/components/setting/mods/config-viewer'
 import { useListen } from '@/hooks/use-listen'
 import { useProfiles } from '@/hooks/use-profiles'
+import {
+  useSubscriptionGroups,
+  type ISubscriptionGroup,
+} from '@/hooks/use-subscription-groups'
 import {
   createProfile,
   deleteProfile,
@@ -119,11 +138,95 @@ interface ProfileSwitchRequest {
   notifySuccess: boolean
   force: boolean
 }
-
 // 记录profile切换状态
 const debugProfileSwitch = (action: string, profile: string, extra?: any) => {
   const timestamp = new Date().toISOString().substring(11, 23)
   debugLog(`[Profile-Debug][${timestamp}] ${action}: ${profile}`, extra || '')
+}
+
+const SortableGroupItem = ({
+  group,
+  activeTab,
+  setActiveTab,
+}: {
+  group: ISubscriptionGroup
+  activeTab: string
+  setActiveTab: (tab: string) => void
+}) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: group.id })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 1000 : undefined,
+  }
+
+  return (
+    <ListItemButton
+      ref={setNodeRef}
+      style={style}
+      selected={activeTab === group.id}
+      onClick={() => setActiveTab(group.id)}
+      sx={{
+        borderRadius: '6px',
+        mb: 0.5,
+        position: 'relative',
+        pl: 1,
+        boxShadow: 'none !important',
+        outline: 'none !important',
+        '&:focus, &:active, &.Mui-focusVisible': {
+          boxShadow: 'none !important',
+          outline: 'none !important',
+        },
+      }}
+    >
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          mr: 0.5,
+          cursor: 'move',
+          color: 'text.secondary',
+          '&:hover': {
+            color: 'text.primary',
+          },
+        }}
+        {...attributes}
+        {...listeners}
+      >
+        <DragIndicatorRounded sx={{ fontSize: '18px', cursor: 'move' }} />
+      </Box>
+
+      <ListItemText
+        primary={
+          <Typography noWrap variant="body2" sx={{ fontWeight: 500 }}>
+            {group.name}
+          </Typography>
+        }
+        secondary={
+          group.remark ? (
+            <Typography
+              noWrap
+              variant="caption"
+              sx={{ display: 'block', opacity: 0.7 }}
+            >
+              {group.remark}
+            </Typography>
+          ) : undefined
+        }
+      />
+      <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+        ({group.uids.length})
+      </Typography>
+    </ListItemButton>
+  )
 }
 
 const ProfilePage = () => {
@@ -145,6 +248,31 @@ const ProfilePage = () => {
     Map<string, number>
   >(() => new Map())
 
+  const loadingCache = useLoadingCache()
+
+  const { groups, setProfileGroup, reorderGroups } = useSubscriptionGroups()
+  const [activeTab, setActiveTab] = useState('all')
+  const groupsManagerRef = useRef<DialogRef>(null)
+
+  const groupSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+  )
+  // No display limit — show all subscriptions at once
+
+  // Reset tab if active group is deleted
+  useEffect(() => {
+    if (activeTab !== 'all' && activeTab !== 'uncategorized') {
+      const exists = groups.some((g) => g.id === activeTab)
+      if (!exists) {
+        queueMicrotask(() => {
+          setActiveTab('all')
+        })
+      }
+    }
+  }, [groups, activeTab])
+
   // Batch selection states
   const [batchMode, setBatchMode] = useState(false)
   const [selectedProfiles, setSelectedProfiles] = useState<Set<string>>(
@@ -164,9 +292,8 @@ const ProfilePage = () => {
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
     }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
+    // NOTE: KeyboardSensor intentionally removed — dnd-kit registers document-level
+    // keydown listeners that intercept ALL keyboard events, breaking input fields.
   )
   const { current } = location.state || {}
 
@@ -268,8 +395,66 @@ const ProfilePage = () => {
 
     const type1 = ['local', 'remote']
 
-    return items.filter((i) => i && type1.includes(i.type!))
+    return items.filter(
+      (i) => i && type1.includes(i.type!) && i.name != null && i.name !== '',
+    )
   }, [profiles])
+
+  const filteredProfileItems = useMemo(() => {
+    if (activeTab === 'all') {
+      return profileItems
+    }
+    if (activeTab === 'uncategorized') {
+      const groupedUids = new Set(groups.flatMap((g) => g.uids))
+      return profileItems.filter((item) => !groupedUids.has(item.uid))
+    }
+    const targetGroup = groups.find((g) => g.id === activeTab)
+    if (!targetGroup) return []
+    const groupUids = new Set(targetGroup.uids)
+    const items = profileItems.filter((item) => groupUids.has(item.uid))
+
+    return [...items].sort((a, b) => {
+      const nameA = a.name || ''
+      const nameB = b.name || ''
+
+      const getSortCategory = (name: string) => {
+        const first = name.trim().charAt(0)
+        if (!first) return 5
+        if (/[a-zA-Z]/.test(first)) return 3 // 字母
+        if (/\d/.test(first)) return 2 // 数字
+        if (/[\u4e00-\u9fa5]/.test(first)) return 4 // 汉字
+        return 1 // 字符/符号
+      }
+
+      const catA = getSortCategory(nameA)
+      const catB = getSortCategory(nameB)
+
+      if (catA !== catB) {
+        return catA - catB
+      }
+
+      const comp = nameA
+        .trim()
+        .toLowerCase()
+        .localeCompare(nameB.trim().toLowerCase(), 'zh', {
+          numeric: true,
+        })
+      if (comp !== 0) return comp
+      return nameA.trim().localeCompare(nameB.trim())
+    })
+  }, [profileItems, activeTab, groups])
+
+  const activeGroupName = useMemo(() => {
+    if (activeTab !== 'all' && activeTab !== 'uncategorized') {
+      return groups.find((g) => g.id === activeTab)?.name || ''
+    }
+    return ''
+  }, [groups, activeTab])
+
+  const uncategorizedCount = useMemo(() => {
+    const groupedUids = new Set(groups.flatMap((g) => g.uids))
+    return profileItems.filter((item) => !groupedUids.has(item.uid)).length
+  }, [profileItems, groups])
 
   const currentActivatings = () => {
     return [...new Set([profiles.current ?? ''])].filter(Boolean)
@@ -289,17 +474,13 @@ const ProfilePage = () => {
       setUrl('')
       await performRobustRefresh()
     }
+
     try {
       // 尝试正常导入
       await importProfile(url)
       await handleImportSuccess('shared.feedback.notifications.importSuccess')
     } catch (initialErr) {
       console.warn('[订阅导入] 首次导入失败:', initialErr)
-
-      if (String(initialErr).toLowerCase().includes('legacy tls')) {
-        showNotice.error(String(initialErr))
-        return
-      }
 
       showNotice.info('profiles.page.feedback.notifications.importRetry')
       try {
@@ -380,6 +561,13 @@ const ProfilePage = () => {
         await reorderProfile(active.id.toString(), over.id.toString())
         mutateProfiles()
       }
+    }
+  }
+
+  const onGroupsDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event
+    if (over && active.id !== over.id) {
+      await reorderGroups(active.id.toString(), over.id.toString())
     }
   }
 
@@ -551,6 +739,9 @@ const ProfilePage = () => {
     const current = profiles.current === uid
     try {
       setActivatings([...(current ? currentActivatings() : []), uid])
+      // 1. 先从自定义分组文件中解除绑定关系
+      await setProfileGroup(uid, null)
+      // 2. 再调用系统原有的删除命令（执行系统自有的 profiles.yaml 标记/清理逻辑）
       await deleteProfile(uid)
       mutateProfiles()
       mutateLogs()
@@ -565,7 +756,6 @@ const ProfilePage = () => {
   })
 
   // 更新所有订阅
-  const loadingCache = useLoadingCache()
   const setLoadingCache = useSetLoadingCache()
   const setLoadingProfiles = useCallback(
     (uids: string[], loading: boolean) => {
@@ -677,6 +867,30 @@ const ProfilePage = () => {
     await runProfileUpdates(target)
   })
 
+  // 更新当前活跃标签下的订阅
+  const onUpdateActiveGroup = useLockFn(async () => {
+    if (activeTab === 'all') {
+      return onUpdateAll()
+    }
+
+    const uidsInGroup =
+      activeTab === 'uncategorized'
+        ? filteredProfileItems
+            .filter((item) => item.type === 'remote')
+            .map((item) => item.uid)
+        : groups.find((g) => g.id === activeTab)?.uids || []
+
+    const targetUids = uidsInGroup.filter((uid) => {
+      const item = profileItems.find((p) => p.uid === uid)
+      return item && item.type === 'remote' && !loadingCache.has(uid)
+    })
+
+    if (targetUids.length === 0) return
+
+    setLoadingProfiles(targetUids, true)
+    await runProfileUpdates(targetUids)
+  })
+
   const onCopyLink = async () => {
     const text = await readText()
     if (text) setUrl(text)
@@ -741,6 +955,9 @@ const ProfilePage = () => {
 
       // Delete all selected profiles
       for (const uid of selectedProfiles) {
+        // 1. 先解绑分组
+        await setProfileGroup(uid, null)
+        // 2. 再调用系统原有的删除命令
         await deleteProfile(uid)
       }
 
@@ -806,8 +1023,14 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="inherit"
-                title={t('profiles.page.actions.updateAll')}
-                onClick={onUpdateAll}
+                title={
+                  activeTab === 'all'
+                    ? t('profiles.page.actions.updateAll')
+                    : activeTab === 'uncategorized'
+                      ? '更新未分类订阅'
+                      : `更新分组【${activeGroupName}】`
+                }
+                onClick={onUpdateActiveGroup}
               >
                 <RefreshRounded />
               </IconButton>
@@ -896,186 +1119,294 @@ const ProfilePage = () => {
         </Box>
       }
     >
-      <Stack
-        direction="row"
-        spacing={1}
+      <Box
         sx={{
-          pt: 1,
-          mb: 0.5,
-          mx: '10px',
-          height: '36px',
           display: 'flex',
-          alignItems: 'center',
+          height: '100%',
+          gap: 2,
+          p: '10px',
+          boxSizing: 'border-box',
         }}
       >
-        <BaseStyledTextField
-          value={url}
-          variant="outlined"
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
-              return
-            }
-            if (!url || disabled || loading) {
-              return
-            }
-            event.preventDefault()
-            void onImport()
-          }}
-          placeholder={t('profiles.page.importForm.placeholder')}
-          slotProps={{
-            input: {
-              sx: { pr: 1 },
-              endAdornment: !url ? (
-                <IconButton
-                  size="small"
-                  sx={{ p: 0.5 }}
-                  title={t('profiles.page.importForm.actions.paste')}
-                  onClick={onCopyLink}
-                >
-                  <ContentPasteRounded fontSize="inherit" />
-                </IconButton>
-              ) : (
-                <IconButton
-                  size="small"
-                  sx={{ p: 0.5 }}
-                  title={t('shared.actions.clear')}
-                  onClick={() => setUrl('')}
-                >
-                  <ClearRounded fontSize="inherit" />
-                </IconButton>
-              ),
-            },
-          }}
-        />
-        <Button
-          disabled={!url || disabled}
-          loading={loading}
-          variant="contained"
-          size="small"
-          sx={{ borderRadius: '6px' }}
-          onClick={onImport}
-        >
-          {t('profiles.page.actions.import')}
-        </Button>
-        <Button
-          variant="contained"
-          size="small"
-          sx={{ borderRadius: '6px' }}
-          onClick={() => viewerRef.current?.create()}
-        >
-          {t('shared.actions.new')}
-        </Button>
-      </Stack>
-
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={onDragEnd}
-      >
+        {/* 左侧：侧边分组导航栏 */}
         <Box
           sx={{
-            pl: '10px',
-            pr: '10px',
-            height: 'calc(100% - 48px)',
-            overflowY: 'auto',
+            width: 200,
+            flexShrink: 0,
+            borderRight: 1,
+            borderColor: dividercolor,
+            pr: 2,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+            height: '100%',
           }}
         >
-          <Box sx={{ mb: 1.5 }}>
-            <Grid container spacing={{ xs: 1, lg: 1 }}>
-              <SortableContext
-                strategy={profileRectSortingStrategy}
-                items={profileItems.map((x) => {
-                  return x.uid
-                })}
+          <Box sx={{ flex: 1, overflowY: 'auto' }}>
+            <Typography
+              variant="subtitle2"
+              sx={{ fontWeight: 600, mb: 1, pl: 1, opacity: 0.8 }}
+            >
+              订阅分组
+            </Typography>
+            <List
+              dense
+              sx={{
+                py: 0,
+                '& .MuiListItemButton-root': {
+                  borderRadius: '6px',
+                  mb: 0.5,
+                },
+              }}
+            >
+              <ListItemButton
+                selected={activeTab === 'all'}
+                onClick={() => setActiveTab('all')}
               >
-                {profileItems.map((item) => (
-                  <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }} key={item.file}>
-                    <SortableProfileItem
-                      id={item.uid}
-                      selected={(switchTarget ?? profiles.current) === item.uid}
-                      activating={
-                        activatings.includes(item.uid) ||
-                        visibleSwitchingProfile === item.uid
-                      }
-                      itemData={item}
-                      timerUpdateRevision={
-                        timerUpdateRevisions.get(item.uid) ?? 0
-                      }
-                      completedUpdateRevision={
-                        completedUpdateRevisions.get(item.uid) ?? 0
-                      }
-                      mutateProfiles={mutateProfiles}
-                      onSelect={(f) => onSelect(item.uid, f)}
-                      onEdit={() => viewerRef.current?.edit(item)}
+                <ListItemText primary="全部" />
+                <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+                  ({profileItems.length})
+                </Typography>
+              </ListItemButton>
+              <DndContext
+                sensors={groupSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={onGroupsDragEnd}
+              >
+                <SortableContext
+                  items={groups.map((g) => g.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {groups.map((group) => (
+                    <SortableGroupItem
+                      key={group.id}
+                      group={group}
+                      activeTab={activeTab}
+                      setActiveTab={setActiveTab}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
+              <ListItemButton
+                selected={activeTab === 'uncategorized'}
+                onClick={() => setActiveTab('uncategorized')}
+              >
+                <ListItemText primary="未分类" />
+                <Typography variant="caption" sx={{ ml: 1, opacity: 0.6 }}>
+                  ({uncategorizedCount})
+                </Typography>
+              </ListItemButton>
+            </List>
+          </Box>
+
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<FolderOpenRounded />}
+            onClick={() => groupsManagerRef.current?.open()}
+            sx={{ mt: 1, borderRadius: '6px', width: '100%', py: 1 }}
+          >
+            分组管理
+          </Button>
+        </Box>
+
+        {/* 右侧：主操作与列表区 */}
+        <Box
+          sx={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            overflow: 'hidden',
+          }}
+        >
+          <Stack
+            direction="row"
+            spacing={1}
+            sx={{
+              mb: 1.5,
+              height: '36px',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            <BaseStyledTextField
+              value={url}
+              variant="outlined"
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.nativeEvent.isComposing) {
+                  return
+                }
+                if (!url || disabled || loading) {
+                  return
+                }
+                event.preventDefault()
+                void onImport()
+              }}
+              placeholder={t('profiles.page.importForm.placeholder')}
+              slotProps={{
+                input: {
+                  sx: { pr: 1 },
+                  endAdornment: !url ? (
+                    <IconButton
+                      size="small"
+                      sx={{ p: 0.5 }}
+                      title={t('profiles.page.importForm.actions.paste')}
+                      onClick={onCopyLink}
+                    >
+                      <ContentPasteRounded fontSize="inherit" />
+                    </IconButton>
+                  ) : (
+                    <IconButton
+                      size="small"
+                      sx={{ p: 0.5 }}
+                      title={t('shared.actions.clear')}
+                      onClick={() => setUrl('')}
+                    >
+                      <ClearRounded fontSize="inherit" />
+                    </IconButton>
+                  ),
+                },
+              }}
+            />
+            <Button
+              disabled={!url || disabled}
+              loading={loading}
+              variant="contained"
+              size="small"
+              sx={{ borderRadius: '6px' }}
+              onClick={onImport}
+            >
+              {t('profiles.page.actions.import')}
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              sx={{ borderRadius: '6px' }}
+              onClick={() => viewerRef.current?.create()}
+            >
+              {t('shared.actions.new')}
+            </Button>
+          </Stack>
+
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={onDragEnd}
+          >
+            <Box
+              sx={{
+                flex: 1,
+                overflowY: 'auto',
+                pr: '4px',
+              }}
+            >
+              <Box sx={{ mb: 1.5 }}>
+                <Grid container spacing={{ xs: 1, lg: 1 }}>
+                  <SortableContext
+                    strategy={profileRectSortingStrategy}
+                    items={filteredProfileItems.map((x) => {
+                      return x.uid
+                    })}
+                  >
+                    {filteredProfileItems.map((item) => (
+                      <Grid
+                        size={{ xs: 12, sm: 6, md: 4, lg: 3 }}
+                        key={item.file}
+                      >
+                        <SortableProfileItem
+                          id={item.uid}
+                          selected={
+                            (switchTarget ?? profiles.current) === item.uid
+                          }
+                          activating={
+                            activatings.includes(item.uid) ||
+                            visibleSwitchingProfile === item.uid
+                          }
+                          itemData={item}
+                          timerUpdateRevision={
+                            timerUpdateRevisions.get(item.uid) ?? 0
+                          }
+                          completedUpdateRevision={
+                            completedUpdateRevisions.get(item.uid) ?? 0
+                          }
+                          mutateProfiles={mutateProfiles}
+                          onSelect={(f) => onSelect(item.uid, f)}
+                          onEdit={() => viewerRef.current?.edit(item)}
+                          onSave={async (prev, curr) => {
+                            if (
+                              prev !== curr &&
+                              profiles.current === item.uid
+                            ) {
+                              await onEnhance(false)
+                            }
+                          }}
+                          onDelete={() => {
+                            if (batchMode) {
+                              toggleProfileSelection(item.uid)
+                            } else {
+                              onDelete(item.uid)
+                            }
+                          }}
+                          batchMode={batchMode}
+                          isSelected={selectedProfiles.has(item.uid)}
+                          onSelectionChange={() =>
+                            toggleProfileSelection(item.uid)
+                          }
+                        />
+                      </Grid>
+                    ))}
+                  </SortableContext>
+                </Grid>
+              </Box>
+              <Divider
+                variant="middle"
+                flexItem
+                sx={{ width: `calc(100% - 32px)`, borderColor: dividercolor }}
+              ></Divider>
+              <Box sx={{ mt: 1.5, mb: '10px' }}>
+                <Grid container spacing={{ xs: 1, lg: 1 }}>
+                  <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
+                    <ProfileMore
+                      id="Merge"
                       onSave={async (prev, curr) => {
-                        if (prev !== curr && profiles.current === item.uid) {
+                        if (prev !== curr) {
                           await onEnhance(false)
-                          //  await restartCore();
-                          //   Notice.success(t("settings.feedback.notifications.clash.restartSuccess"), 1000);
                         }
                       }}
-                      onDelete={() => {
-                        if (batchMode) {
-                          toggleProfileSelection(item.uid)
-                        } else {
-                          onDelete(item.uid)
-                        }
-                      }}
-                      batchMode={batchMode}
-                      isSelected={selectedProfiles.has(item.uid)}
-                      onSelectionChange={() => toggleProfileSelection(item.uid)}
                     />
                   </Grid>
-                ))}
-              </SortableContext>
-            </Grid>
-          </Box>
-          <Divider
-            variant="middle"
-            flexItem
-            sx={{ width: `calc(100% - 32px)`, borderColor: dividercolor }}
-          ></Divider>
-          <Box sx={{ mt: 1.5, mb: '10px' }}>
-            <Grid container spacing={{ xs: 1, lg: 1 }}>
-              <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
-                <ProfileMore
-                  id="Merge"
-                  onSave={async (prev, curr) => {
-                    if (prev !== curr) {
-                      await onEnhance(false)
-                    }
-                  }}
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
-                <ProfileMore
-                  id="Script"
-                  logInfo={chainLogs['Script']}
-                  onSave={async (prev, curr) => {
-                    if (prev !== curr) {
-                      await onEnhance(false)
-                    }
-                  }}
-                />
-              </Grid>
-            </Grid>
-          </Box>
+                  <Grid size={{ xs: 12, sm: 6, md: 6, lg: 6 }}>
+                    <ProfileMore
+                      id="Script"
+                      logInfo={chainLogs['Script']}
+                      onSave={async (prev, curr) => {
+                        if (prev !== curr) {
+                          await onEnhance(false)
+                        }
+                      }}
+                    />
+                  </Grid>
+                </Grid>
+              </Box>
+            </Box>
+            <DragOverlay />
+          </DndContext>
         </Box>
-        <DragOverlay />
-      </DndContext>
+      </Box>
 
       <ProfileViewer
         ref={viewerRef}
         onChange={async (isActivating) => {
           mutateProfiles()
-          // 只有更改当前激活的配置时才触发全局重新加载
           if (isActivating) {
             await onEnhance(false)
           }
         }}
       />
       <ConfigViewer ref={configRef} />
+      <GroupsManagerDialog ref={groupsManagerRef} />
     </BasePage>
   )
 }

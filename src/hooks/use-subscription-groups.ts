@@ -22,41 +22,13 @@ const getFilePath = async () => {
   return await join(appDir, 'subscription_groups.json')
 }
 
-const getSubscriptionGroups = async (
-  validUids?: string[],
-): Promise<ISubscriptionGroupsConfig> => {
+const getSubscriptionGroups = async (): Promise<ISubscriptionGroupsConfig> => {
   try {
     const filePath = await getFilePath()
     if (await exists(filePath)) {
       const content = await readTextFile(filePath)
       const data = JSON.parse(content) as ISubscriptionGroupsConfig
       if (data && Array.isArray(data.groups)) {
-        // 静默清理无效订阅 UID (即 orphan cleanup)
-        if (validUids) {
-          const validSet = new Set(validUids)
-          const seenUids = new Set<string>()
-          let changed = false
-          const cleanedGroups = data.groups.map((group) => {
-            const filteredUids = group.uids.filter((uid) => {
-              const isValid = validSet.has(uid)
-              const isNotDuplicate = !seenUids.has(uid)
-              if (isValid && isNotDuplicate) {
-                seenUids.add(uid)
-                return true
-              } else {
-                changed = true
-                return false
-              }
-            })
-            return { ...group, uids: filteredUids }
-          })
-          if (changed) {
-            const updatedData = { groups: cleanedGroups }
-            await writeTextFile(filePath, JSON.stringify(updatedData, null, 2))
-            return updatedData
-          }
-          return { groups: cleanedGroups }
-        }
         return data
       }
     }
@@ -73,17 +45,23 @@ const saveSubscriptionGroups = async (data: ISubscriptionGroupsConfig) => {
 
 export const useSubscriptionGroups = () => {
   const { profiles } = useProfiles()
-  const validUids = useMemo(() => {
-    return (
+
+  const validSet = useMemo(() => {
+    return new Set(
       profiles?.items
-        ?.filter((item) => item && item.uid)
-        .map((item) => item.uid) || []
+        ?.filter(
+          (item) =>
+            item &&
+            item.uid &&
+            (item.type === 'local' || item.type === 'remote'),
+        )
+        .map((item) => item.uid) || [],
     )
   }, [profiles])
 
   const { data, refetch } = useQuery<ISubscriptionGroupsConfig>({
-    queryKey: ['getSubscriptionGroups', validUids.join(',')],
-    queryFn: () => getSubscriptionGroups(validUids),
+    queryKey: ['getSubscriptionGroups'],
+    queryFn: () => getSubscriptionGroups(),
     refetchOnWindowFocus: false,
     staleTime: 500,
     placeholderData: { groups: [] },
@@ -91,8 +69,25 @@ export const useSubscriptionGroups = () => {
 
   const groups = data?.groups || []
 
-  const updateGroupsFile = async (newGroups: ISubscriptionGroup[]) => {
-    const config = { groups: newGroups }
+  // 在主动进行写操作时，安全地过滤掉不在 validSet 里的历史无效死 UID（支持 allowUids 白名单豁免）
+  const sanitizeGroups = (
+    groupList: ISubscriptionGroup[],
+    allowUids: string[] = [],
+  ) => {
+    if (!validSet || validSet.size === 0) return groupList
+    const allowSet = new Set([...Array.from(validSet), ...allowUids])
+    return groupList.map((g) => ({
+      ...g,
+      uids: g.uids.filter((uid) => allowSet.has(uid)),
+    }))
+  }
+
+  const updateGroupsFile = async (
+    newGroups: ISubscriptionGroup[],
+    allowUids: string[] = [],
+  ) => {
+    const cleanGroups = sanitizeGroups(newGroups, allowUids)
+    const config = { groups: cleanGroups }
     await saveSubscriptionGroups(config)
     await refetch()
   }
@@ -130,7 +125,7 @@ export const useSubscriptionGroups = () => {
         uids: g.uids.filter((uid) => !targetUids.includes(uid)),
       }
     })
-    await updateGroupsFile(newGroups)
+    await updateGroupsFile(newGroups, targetUids)
   }
 
   const deleteGroup = async (id: string) => {
@@ -151,7 +146,7 @@ export const useSubscriptionGroups = () => {
       }
       return { ...g, uids }
     })
-    await updateGroupsFile(newGroups)
+    await updateGroupsFile(newGroups, [profileUid])
   }
 
   const reorderGroups = async (activeId: string, overId: string) => {

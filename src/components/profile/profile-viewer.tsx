@@ -135,8 +135,14 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
         // 执行创建或更新操作，本地配置不需要回退机制
         let createdUid: string | null = null
         if (openType === 'new') {
-          const oldUids =
-            profiles?.items?.filter((i) => i && i.uid).map((i) => i.uid) || []
+          const oldMainUids =
+            profiles?.items
+              ?.filter(
+                (i) =>
+                  i && i.uid && (i.type === 'local' || i.type === 'remote'),
+              )
+              .map((i) => i.uid) || []
+
           if (!isRemote) {
             await createProfile(item, fileDataRef.current)
           } else {
@@ -162,15 +168,17 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
               )
             }
           }
-          // 获取最新的 profiles 列表，找到新创建 of uid
+          // 获取最新的 profiles 列表，找到新创建的主订阅 uid (排除 merge/script 等附属规则)
           const newProfiles = await getProfiles()
-          const newUids =
-            newProfiles?.items?.filter((i) => i && i.uid).map((i) => i.uid) ||
-            []
-          createdUid = newUids.find((uid) => !oldUids.includes(uid)) || null
+          const newMainItems =
+            newProfiles?.items?.filter(
+              (i) => i && i.uid && (i.type === 'local' || i.type === 'remote'),
+            ) || []
+          createdUid =
+            newMainItems.find((i) => !oldMainUids.includes(i.uid))?.uid || null
 
-          if (createdUid && selectedGroupId) {
-            await setProfileGroup(createdUid, selectedGroupId)
+          if (createdUid) {
+            await setProfileGroup(createdUid, selectedGroupId || null)
           }
         } else {
           if (!form.uid) throw new Error('UID not found')
@@ -300,15 +308,6 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
         )}
       />
 
-      {isLocal && openType === 'new' && (
-        <FileInput
-          onChange={(file, val) => {
-            setValue('name', getValues('name') || file.name)
-            fileDataRef.current = val
-          }}
-        />
-      )}
-
       <FormControl size="small" fullWidth sx={{ mt: 1.5, mb: 1 }}>
         <InputLabel id="profile-group-select-label">所属分组</InputLabel>
         <Select
@@ -325,6 +324,15 @@ export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
           ))}
         </Select>
       </FormControl>
+
+      {isLocal && openType === 'new' && (
+        <FileInput
+          onChange={(file, val) => {
+            setValue('name', getValues('name') || file.name)
+            fileDataRef.current = val
+          }}
+        />
+      )}
 
       {isRemote && (
         <>

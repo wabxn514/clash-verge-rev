@@ -250,7 +250,8 @@ const ProfilePage = () => {
 
   const loadingCache = useLoadingCache()
 
-  const { groups, setProfileGroup, reorderGroups } = useSubscriptionGroups()
+  const { groups, setProfileGroup, reorderGroups, refetchGroups } =
+    useSubscriptionGroups()
   const [activeTab, setActiveTab] = useState('all')
   const groupsManagerRef = useRef<DialogRef>(null)
 
@@ -918,23 +919,42 @@ const ProfilePage = () => {
   }
 
   const selectAllProfiles = () => {
-    setSelectedProfiles(new Set(profileItems.map((item) => item.uid)))
+    setSelectedProfiles(
+      (prev) =>
+        new Set([...prev, ...filteredProfileItems.map((item) => item.uid)]),
+    )
   }
 
-  const clearAllSelections = () => {
+  const clearCurrentGroupSelections = () => {
+    setSelectedProfiles((prev) => {
+      const newSet = new Set(prev)
+      filteredProfileItems.forEach((item) => newSet.delete(item.uid))
+      return newSet
+    })
+  }
+
+  const _clearAllSelections = () => {
     setSelectedProfiles(new Set())
   }
 
   const isAllSelected = () => {
     return (
-      profileItems.length > 0 && profileItems.length === selectedProfiles.size
+      filteredProfileItems.length > 0 &&
+      filteredProfileItems.every((item) => selectedProfiles.has(item.uid))
     )
   }
 
+  const selectedCountInGroup = useMemo(() => {
+    return filteredProfileItems.filter((item) => selectedProfiles.has(item.uid))
+      .length
+  }, [filteredProfileItems, selectedProfiles])
+
   const getSelectionState = () => {
-    if (selectedProfiles.size === 0) {
+    if (filteredProfileItems.length === 0) return 'none'
+
+    if (selectedCountInGroup === 0) {
       return 'none' // 无选择
-    } else if (selectedProfiles.size === profileItems.length) {
+    } else if (selectedCountInGroup === filteredProfileItems.length) {
       return 'all' // 全选
     } else {
       return 'partial' // 部分选择
@@ -942,19 +962,24 @@ const ProfilePage = () => {
   }
 
   const deleteSelectedProfiles = useLockFn(async () => {
-    if (selectedProfiles.size === 0) return
+    if (selectedCountInGroup === 0) return
+
+    // 仅获取当前组内被勾选的订阅 UID
+    const targetUids = filteredProfileItems
+      .map((item) => item.uid)
+      .filter((uid) => selectedProfiles.has(uid))
 
     try {
-      // Get all currently activating profiles
+      // Get all currently activating profiles in targets
       const currentActivating =
-        profiles.current && selectedProfiles.has(profiles.current)
+        profiles.current && targetUids.includes(profiles.current)
           ? [profiles.current]
           : []
 
       setActivatings((prev) => [...new Set([...prev, ...currentActivating])])
 
-      // Delete all selected profiles
-      for (const uid of selectedProfiles) {
+      // Delete all target profiles in current group
+      for (const uid of targetUids) {
         // 1. 先解绑分组
         await setProfileGroup(uid, null)
         // 2. 再调用系统原有的删除命令
@@ -969,8 +994,12 @@ const ProfilePage = () => {
         await onEnhance(false)
       }
 
-      // Clear selections and exit batch mode
-      setSelectedProfiles(new Set())
+      // 从全局已选状态中清除已删除的 UID，并关闭批量模式
+      setSelectedProfiles((prev) => {
+        const next = new Set(prev)
+        targetUids.forEach((uid) => next.delete(uid))
+        return next
+      })
       setBatchMode(false)
 
       showNotice.success('profiles.page.feedback.notifications.batchDeleted')
@@ -1085,7 +1114,9 @@ const ProfilePage = () => {
                     : t('profiles.page.batch.actions.selectAll')
                 }
                 onClick={
-                  isAllSelected() ? clearAllSelections : selectAllProfiles
+                  isAllSelected()
+                    ? clearCurrentGroupSelections
+                    : selectAllProfiles
                 }
               >
                 {getSelectionState() === 'all' ? (
@@ -1101,7 +1132,7 @@ const ProfilePage = () => {
                 color="error"
                 title={t('profiles.page.batch.actions.delete')}
                 onClick={deleteSelectedProfiles}
-                disabled={selectedProfiles.size === 0}
+                disabled={selectedCountInGroup === 0}
               >
                 <DeleteRounded />
               </IconButton>
@@ -1112,7 +1143,7 @@ const ProfilePage = () => {
                 sx={{ flex: 1, textAlign: 'right', color: 'text.secondary' }}
               >
                 {t('profiles.page.batch.summary.selected')}{' '}
-                {selectedProfiles.size} {t('profiles.page.batch.summary.items')}
+                {selectedCountInGroup} {t('profiles.page.batch.summary.items')}
               </Box>
             </Box>
           )}
@@ -1399,7 +1430,10 @@ const ProfilePage = () => {
       <ProfileViewer
         ref={viewerRef}
         onChange={async (isActivating) => {
-          mutateProfiles()
+          // await mutateProfiles 确保 profiles.items 刷新，再显式 refetchGroups
+          // 避免 profileItems 与 groups 数据不同步导致分组内订阅列表为空
+          await mutateProfiles()
+          await refetchGroups()
           if (isActivating) {
             await onEnhance(false)
           }
